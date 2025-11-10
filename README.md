@@ -5,6 +5,6 @@ Find locations based on your preferences
 ## Features
 - A map from OpenFreeMap rendered using MapLibre
 - Option to zoom in and out
-- A chatbot
+- gpt-5-mini as a chatbot 
 ## To run
 `npm run dev`

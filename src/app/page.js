@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import './map.css';
-import { BotMessageSquare , XIcon, SendIcon, MapPinIcon, MoveIcon } from 'lucide-react';
+import { BotMessageSquare, XIcon, SendIcon } from 'lucide-react';
+import { useChat } from '@ai-sdk/react';
+import { DefaultChatTransport } from 'ai';
 
 export default function MapApp() {
   const mapContainer = useRef(null);
@@ -15,25 +16,25 @@ export default function MapApp() {
   const [zoom, setZoom] = useState(12);
   const [mapLoaded, setMapLoaded] = useState(false);
 
-  const [mounted, setMounted] = useState(true);
   const [isChatOpen, setIsChatOpen] = useState(false);
-  const [messages, setMessages] = useState([
-    { id: 1, text: "Hello! I'm your map assistant. How can I help you today?", isBot: true }
-  ]);
-  const [inputMessage, setInputMessage] = useState('');
-  const [pin, setPin] = useState(null);
-  const [isPlacingPin, setIsPlacingPin] = useState(false);
+  const [input, setInput] = useState('');
   const messagesEndRef = useRef(null);
-  const pinMarkerRef = useRef(null);
   
-  // Use ref to track isPlacingPin so the click handler always has the current value
-  const isPlacingPinRef = useRef(isPlacingPin);
+  // Use Vercel AI SDK's useChat hook
+  const { messages, sendMessage, status } = useChat({
+    transport: new DefaultChatTransport({
+      api: '/api/chat',
+    }),
+  });
 
-  // Keep the ref in sync with state
-  useEffect(() => {
-    isPlacingPinRef.current = isPlacingPin;
-  }, [isPlacingPin]);
-
+  // Custom submit handler that prevents default behavior
+  const onSubmit = (e) => {
+    e.preventDefault();
+    if (input.trim()) {
+      sendMessage({ text: input });
+      setInput('');
+    };
+  };
   useEffect(() => {
     if (map.current) return;
 
@@ -51,22 +52,6 @@ export default function MapApp() {
       setMapLoaded(true);
     });
 
-    // Update coordinates and zoom when map moves
-    map.current.on('move', () => {
-      const center = map.current.getCenter();
-      setLng(center.lng);
-      setLat(center.lat);
-      setZoom(map.current.getZoom());
-    });
-
-    // Handle map clicks for placing pins - use ref to get current state
-    map.current.on('click', (e) => {
-      if (isPlacingPinRef.current) {
-        const { lng, lat } = e.lngLat;
-        placePin(lng, lat);
-      }
-    });
-
     return () => {
       if (map.current) {
         map.current.remove();
@@ -74,54 +59,6 @@ export default function MapApp() {
       }
     };
   }, [lng, lat, zoom]);
-
-  const placePin = (lng, lat) => {
-    // Remove existing pin marker
-    if (pinMarkerRef.current) {
-      pinMarkerRef.current.remove();
-    }
-
-    // Create new pin marker
-    const marker = new maplibregl.Marker({ draggable: false })
-      .setLngLat([lng, lat])
-      .setPopup(new maplibregl.Popup().setHTML(`
-        <div class="p-2">
-          <h3 class="font-bold">Placed Pin</h3>
-          <p>Lat: ${lat.toFixed(6)}</p>
-          <p>Lng: ${lng.toFixed(6)}</p>
-          <p>Zoom: ${map.current.getZoom().toFixed(2)}</p>
-        </div>
-      `))
-      .addTo(map.current);
-
-    pinMarkerRef.current = marker;
-
-    const newPin = {
-      id: Date.now(),
-      lng: lng,
-      lat: lat,
-      zoom: map.current.getZoom()
-    };
-    
-    setPin(newPin);
-    setIsPlacingPin(false);
-    
-    // Add message about the new pin
-    const pinMessage = {
-      id: messages.length + 1,
-      text: `Pin placed! Coordinates: ${lat.toFixed(6)}°, ${lng.toFixed(6)}° at zoom level ${map.current.getZoom().toFixed(2)}`,
-      isBot: true
-    };
-    setMessages(prev => [...prev, pinMessage]);
-  };
-
-  const clearPin = () => {
-    if (pinMarkerRef.current) {
-      pinMarkerRef.current.remove();
-      pinMarkerRef.current = null;
-    }
-    setPin(null);
-  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -131,94 +68,13 @@ export default function MapApp() {
     scrollToBottom();
   }, [messages]);
 
-  const handleSendMessage = (e) => {
-    e.preventDefault();
-    if (!inputMessage.trim()) return;
-
-    const userMessage = {
-      id: messages.length + 1,
-      text: inputMessage,
-      isBot: false
-    };
-
-    setMessages(prev => [...prev, userMessage]);
-    setInputMessage('');
-
-    // Simulate bot response
-    setTimeout(() => {
-      const botResponse = {
-        id: messages.length + 2,
-        text: getBotResponse(inputMessage),
-        isBot: true
-      };
-      setMessages(prev => [...prev, botResponse]);
-    }, 500);
-  };
-
-  const getBotResponse = (userInput) => {
-    const input = userInput.toLowerCase();
-    
-    if (input.includes('location') || input.includes('where')) {
-      return `You're currently viewing coordinates: ${lat.toFixed(4)}°, ${lng.toFixed(4)}° at zoom level ${zoom.toFixed(2)}.`;
-    } else if (input.includes('zoom')) {
-      return `Current zoom level: ${zoom.toFixed(2)}. You can zoom in/out using the controls on the right side of the map or with your mouse wheel!`;
-    } else if (input.includes('navigation') || input.includes('navigate')) {
-      return 'Use the navigation controls on the top-right to pan and rotate the map. You can also click and drag to move around!';
-    } else if (input.includes('pin') || input.includes('marker') || input.includes('place')) {
-      if (input.includes('clear') || input.includes('remove') || input.includes('delete')) {
-        clearPin();
-        return "I've removed the pin from the map.";
-      } else if (pin && (input.includes('list') || input.includes('show') || input.includes('where'))) {
-        return getPinInformation();
-      } else {
-        setIsPlacingPin(true);
-        return "Click anywhere on the map to place a pin! I'll tell you the exact coordinates and zoom level.";
-      }
-    } else if (input.includes('help')) {
-      return 'I can help you with: placing pins, checking locations, zoom levels, navigation, and map information. Try "place a pin" or "what\'s my location?"';
-    } else {
-      return "I understand you're asking about the map. Try asking me to place a pin, check your location, or ask about zoom levels!";
-    }
-  };
-
-  const getPinInformation = () => {
-    if (!pin) {
-      return "There is no pin placed on the map yet. Say 'place a pin' to add one!";
-    }
-
-    return `Pin is placed at:\nLatitude: ${pin.lat.toFixed(6)}°\nLongitude: ${pin.lng.toFixed(6)}°\nPlaced at zoom: ${pin.zoom.toFixed(2)}`;
-  };
-
-  const togglePinPlacement = () => {
-    const newPlacingState = !isPlacingPin;
-    setIsPlacingPin(newPlacingState);
-    
-    const userMessage = {
-      id: messages.length + 1,
-      text: newPlacingState ? "Place a pin on the map" : "Stop placing pins",
-      isBot: false
-    };
-    setMessages(prev => [...prev, userMessage]);
-    
-    setTimeout(() => {
-      const botResponse = {
-        id: messages.length + 2,
-        text: newPlacingState 
-          ? "Click anywhere on the map to place a pin! I'll tell you the exact coordinates and zoom level."
-          : "Pin placement mode deactivated. Click the pin button again to place a new pin.",
-        isBot: true
-      };
-      setMessages(prev => [...prev, botResponse]);
-    }, 500);
-  };
-
   return (
     <div className="relative w-full h-screen">
       {/* Map Container */}
-      <div ref={mapContainer} id="map" className="w-full h-full" />
+      <div ref={mapContainer} className="w-full h-full" />
       
       {/* UI Overlay */}
-      <div className="absolute top-0 left-0 right-0 p-4">
+      <div className="absolute top-0 left-0 right-0 p-4 pointer-events-none">
         <div className="max-w-lg mx-auto">
           <div className="bg-white rounded-lg shadow-lg p-4 text-center">
             <h1 className="text-2xl font-bold text-gray-800">Loc Intel</h1>
@@ -227,51 +83,14 @@ export default function MapApp() {
         </div>
       </div>
 
-      {/* Pin Placement Indicator */}
-      {isPlacingPin && (
-        <div className="absolute top-20 left-1/2 transform -translate-x-1/2">
-          <div className="bg-blue-600 text-white rounded-lg shadow-lg p-4 flex items-center space-x-2">
-            <MapPinIcon size={20} />
-            <span className="font-semibold">Click on the map to place a pin</span>
-          </div>
-        </div>
-      )}
-
-      {/* Pin Control Buttons */}
-      <div className="absolute top-4 left-4 flex flex-col space-y-2">
-        {/* Toggle Pin Placement Button */}
-        <button
-          onClick={togglePinPlacement}
-          className={`bg-white rounded-lg shadow-lg p-3 transition-all duration-300 ${
-            isPlacingPin 
-              ? 'ring-2 ring-blue-600 text-blue-600' 
-              : 'text-gray-700 hover:text-blue-600 hover:shadow-xl'
-          }`}
-          title={isPlacingPin ? "Stop placing pins" : "Place a pin on the map"}
-        >
-          <MapPinIcon size={24} />
-        </button>
-
-        {/* Clear Pin Button - Only show if there's a pin */}
-        {pin && (
-          <button
-            onClick={clearPin}
-            className="bg-white rounded-lg shadow-lg p-3 text-red-600 hover:text-red-700 hover:shadow-xl transition-all duration-300"
-            title="Remove pin from map"
-          >
-            <XIcon size={24} />
-          </button>
-        )}
-      </div>
-
       {/* Chatbot UI */}
       <div className="absolute bottom-12 right-12 flex flex-col items-end space-y-3">
         {/* Chat Window */}
         {isChatOpen && (
-          <div className="bg-white rounded-lg shadow-xl w-80 h-96 flex flex-col border border-gray-200">
+          <div className="bg-white rounded-lg shadow-xl w-96 h-112 flex flex-col border border-gray-200">
             {/* Chat Header */}
             <div className="bg-blue-600 text-white p-4 rounded-t-lg flex justify-between items-center">
-              <h3 className="font-semibold">Map Assistant</h3>
+              <h3 className="font-semibold">AI Assistant</h3>
               <button 
                 onClick={() => setIsChatOpen(false)}
                 className="text-white hover:text-gray-200 transition-colors"
@@ -286,36 +105,55 @@ export default function MapApp() {
                 {messages.map((message) => (
                   <div
                     key={message.id}
-                    className={`flex ${message.isBot ? 'justify-start' : 'justify-end'}`}
+                    className={`flex ${message.role === 'assistant' ? 'justify-start' : 'justify-end'}`}
                   >
                     <div
                       className={`max-w-[80%] rounded-lg px-3 py-2 whitespace-pre-wrap ${
-                        message.isBot
+                        message.role === 'assistant'
                           ? 'bg-white border border-gray-200 text-gray-800'
                           : 'bg-blue-600 text-white'
                       }`}
                     >
-                      {message.text}
+                      {message.parts.map((part, index) => (
+                        part.type === 'text' ? (
+                          <>{part.text}</>
+                        ) : null
+                      ))}
                     </div>
                   </div>
                 ))}
+
+                {status != "ready" && (
+                  <div className="flex justify-start">
+                    <div className="bg-white border border-gray-200 text-gray-800 rounded-lg px-3 py-2">
+                      <div className="flex space-x-2">
+                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 <div ref={messagesEndRef} />
               </div>
             </div>
 
             {/* Input Form */}
-            <form onSubmit={handleSendMessage} className="p-3 border-t border-gray-200">
+            <form onSubmit={onSubmit} className="p-3 border-t border-gray-200">
               <div className="flex space-x-2">
                 <input
                   type="text"
-                  value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  placeholder="Ask about pins, location, zoom..."
-                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  name="message"
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  placeholder="Ask me anything..."
+                  disabled={status != "ready"}
+                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
                 />
                 <button
                   type="submit"
-                  className="bg-blue-600 text-white rounded-lg px-4 py-2 hover:bg-blue-700 transition-colors flex items-center justify-center"
+                  disabled={status != "ready" || !input || !input.trim()}
+                  className="bg-blue-600 text-white rounded-lg px-4 py-2 hover:bg-blue-700 transition-colors flex items-center justify-center disabled:bg-gray-400 disabled:cursor-not-allowed"
                 >
                   <SendIcon size={18} />
                 </button>
@@ -336,7 +174,7 @@ export default function MapApp() {
           {isChatOpen ? (
             <XIcon size={24} className="text-white" />
           ) : (
-            <BotMessageSquare  size={24} className="text-white" />
+            <BotMessageSquare size={24} className="text-white" />
           )}
         </button>
       </div>
