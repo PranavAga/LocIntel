@@ -3,13 +3,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { BotMessageSquare, XIcon, SendIcon } from 'lucide-react';
+import { BotMessageSquare, XIcon, SendIcon, MapPin } from 'lucide-react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 
 export default function MapApp() {
   const mapContainer = useRef(null);
   const map = useRef(null);
+  const geojsonSourceRef = useRef(null);
 
   const [lat, setLat] = useState(28.6139);
   const [lng, setLng] = useState(77.2088);
@@ -19,22 +20,61 @@ export default function MapApp() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [input, setInput] = useState('');
   const messagesEndRef = useRef(null);
+
+  const [currentQueryFeatures, setCurrentQueryFeatures] = useState([]);
   
-  // Use Vercel AI SDK's useChat hook
-  const { messages, sendMessage, status } = useChat({
+  // Use Vercel AI SDK's useChat hook with tool handling
+  const { messages, sendMessage, status, handleSubmit } = useChat({
     transport: new DefaultChatTransport({
       api: '/api/chat',
     }),
+    onToolCall: ({ toolCall }) => {
+      if (toolCall.toolName === 'searchLocation') {
+        // The tool will be executed automatically by the AI SDK
+        console.log('Searching for:', toolCall.input.query);
+      }
+    },
+    onFinish: (options) => {
+      if (options?.isError){
+        console.error('Error in chat response:', options?.error);
+        return;
+      }
+      const lastMessage = options.message;
+      console.log('Last message:', lastMessage);
+
+      lastMessage.parts.forEach(part => {
+        if (part.type == 'tool-searchLocation' && part.output?.success && part.output?.count) {
+          const geojson = {
+            type: part.output.data.type,
+            features: part.output.data.features,
+          };
+          console.log('Displaying GeoJSON on map:', geojson);
+
+          // Combine all geojsons for one user query
+          setCurrentQueryFeatures(prev => {
+            const newFeatures = [...prev, ...geojson.features];
+            displayGeoJSONOnMap({
+              type: 'FeatureCollection',
+              features: newFeatures
+            });
+            return newFeatures;
+          });
+        }
+      })
+    },
   });
 
-  // Custom submit handler that prevents default behavior
+  // Custom submit handler
   const onSubmit = (e) => {
     e.preventDefault();
     if (input.trim()) {
+      clearSearchResults();          // reset for new query
+      setCurrentQueryFeatures([]);   // clear accumulated results
       sendMessage({ text: input });
       setInput('');
-    };
+    }
   };
+
   useEffect(() => {
     if (map.current) return;
 
@@ -48,9 +88,106 @@ export default function MapApp() {
     map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
     map.current.addControl(new maplibregl.FullscreenControl(), 'top-right');
 
-    map.current.on('load', () => {
-      setMapLoaded(true);
-    });
+  map.current.on('load', () => {
+  setMapLoaded(true);
+  
+  // Add GeoJSON source for search results
+  map.current.addSource('search-results', {
+    type: 'geojson',
+    data: {
+      type: 'FeatureCollection',
+      features: []
+    }
+  });
+
+  // Add layer for polygons
+  map.current.addLayer({
+    id: 'search-polygons',
+    type: 'fill',
+    source: 'search-results',
+    paint: {
+      'fill-color': '#3b82f6',
+      'fill-opacity': 0.3,
+      'fill-outline-color': '#1d4ed8'
+    }
+  });
+
+  // Add layer for points (only for non-polygon features)
+  map.current.addLayer({
+    id: 'search-points',
+    type: 'circle',
+    source: 'search-results',
+    filter: ['!=', ['geometry-type'], 'Polygon'],
+    paint: {
+      'circle-radius': 6,
+      'circle-color': '#ef4444',
+      'circle-stroke-width': 2,
+      'circle-stroke-color': '#ffffff'
+    }
+  });
+
+  // Create a popup but don't add it to the DOM yet
+  const popup = new maplibregl.Popup({
+    closeButton: false,
+    closeOnClick: false
+  });
+
+  // Add hover effect for polygons
+  map.current.on('mouseenter', 'search-polygons', (e) => {
+    // Change the cursor style as a UI indicator
+    map.current.getCanvas().style.cursor = 'pointer';
+
+    const feature = e.features[0];
+    const displayName = feature.properties?.display_name || 'Unknown';
+    const type = feature.properties?.type || 'Unknown';
+    
+    // Show popup at the first coordinate of the polygon
+    const coordinates = e.lngLat;
+    
+    popup
+      .setLngLat(coordinates)
+      .setHTML(`
+        <div class="font-semibold">${displayName}</div>
+        <div class="text-sm text-gray-600">Type: ${type}</div>
+      `)
+      .addTo(map.current);
+  });
+
+  // Add hover effect for points
+  map.current.on('mouseenter', 'search-points', (e) => {
+    // Change the cursor style as a UI indicator
+    map.current.getCanvas().style.cursor = 'pointer';
+
+    const feature = e.features[0];
+    const displayName = feature.properties?.display_name || 'Unknown';
+    const type = feature.properties?.type || 'Unknown';
+    
+    const coordinates = e.lngLat;
+    
+    popup
+      .setLngLat(coordinates)
+      .setHTML(`
+        <div class="font-semibold">${displayName}</div>
+        <div class="text-sm text-gray-600">Type: ${type}</div>
+      `)
+      .addTo(map.current);
+  });
+
+  // When mouse leaves polygons, remove popup and reset cursor
+  map.current.on('mouseleave', 'search-polygons', () => {
+    map.current.getCanvas().style.cursor = '';
+    popup.remove();
+  });
+
+  // When mouse leaves points, remove popup and reset cursor
+  map.current.on('mouseleave', 'search-points', () => {
+    map.current.getCanvas().style.cursor = '';
+    popup.remove();
+  });
+
+  geojsonSourceRef.current = map.current.getSource('search-results');
+});
+
 
     return () => {
       if (map.current) {
@@ -60,6 +197,51 @@ export default function MapApp() {
     };
   }, [lng, lat, zoom]);
 
+  // Function to display GeoJSON on the map
+  const displayGeoJSONOnMap = (geojson) => {
+    if (!map.current || !geojsonSourceRef.current) return;
+
+    // Update the GeoJSON source
+    geojsonSourceRef.current.setData(geojson);
+
+    // Fit map to the bounds of the GeoJSON
+    if (geojson.features && geojson.features.length > 0) {
+      const bounds = new maplibregl.LngLatBounds();
+      
+      geojson.features.forEach(feature => {
+        if (feature.geometry) {
+          if (feature.geometry.type === 'Point') {
+            bounds.extend(feature.geometry.coordinates);
+          } else if (feature.geometry.type === 'Polygon') {
+            feature.geometry.coordinates[0].forEach(coord => {
+              bounds.extend(coord);
+            });
+          } else if (feature.geometry.type === 'MultiPolygon') {
+            feature.geometry.coordinates.forEach(polygon => {
+              polygon[0].forEach(coord => {
+                bounds.extend(coord);
+              });
+            });
+          }
+        }
+      });
+
+      if (!bounds.isEmpty()) {
+        map.current.fitBounds(bounds, { padding: 100, duration: 1000 });
+      }
+    }
+  };
+
+  // Clear search results from map
+  const clearSearchResults = () => {
+    if (geojsonSourceRef.current) {
+      geojsonSourceRef.current.setData({
+        type: 'FeatureCollection',
+        features: []
+      });
+    }
+  };
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -67,6 +249,36 @@ export default function MapApp() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Render tool calls in messages
+  const renderMessageContent = (message) => {
+    return message.parts.map((part, index) => {
+      if (part.type === 'text') {
+        return <div key={index}>{part.text}</div>;
+      } else if (part.type === 'tool-searchLocation') {
+        return (
+          <div key={index} className="bg-yellow-50 border border-yellow-200 rounded p-2 my-2">
+            <div className="flex items-center text-yellow-800">
+              <MapPin size={16} className="mr-2" />
+              <span className="text-sm font-medium">
+                Searched for: "{part.input?.query}"
+              </span>
+            </div>
+            {part.state == 'output-available' && (part.output?.success ? (
+              <div className="mt-2 text-sm text-yellow-700">
+                Found {part.output.count} result{part.output.count !== 1 ? 's' : ''}.
+              </div>
+            ) : (
+              <div className="mt-2 text-sm text-red-600">
+                Search failed. Error: {part.errorText}.
+              </div>
+            ))}
+          </div>
+        );
+      }
+      return null;
+    });
+  };
 
   return (
     <div className="relative w-full h-screen">
@@ -82,6 +294,19 @@ export default function MapApp() {
           </div>
         </div>
       </div>
+
+      {/* Clear Results Button */}
+      {mapLoaded && (
+        <div className="absolute top-12 left-12 pointer-events-auto">
+          <button
+            onClick={clearSearchResults}
+            className="bg-white hover:bg-gray-50 text-gray-800 px-4 py-2 rounded-lg shadow-lg border border-gray-200 transition-colors flex items-center"
+          >
+            <XIcon size={16} className="mr-2" />
+            Clear Results
+          </button>
+        </div>
+      )}
 
       {/* Chatbot UI */}
       <div className="absolute bottom-12 right-12 flex flex-col items-end space-y-3">
@@ -114,11 +339,7 @@ export default function MapApp() {
                           : 'bg-blue-600 text-white'
                       }`}
                     >
-                      {message.parts.map((part, index) => (
-                        part.type === 'text' ? (
-                          <>{part.text}</>
-                        ) : null
-                      ))}
+                      {renderMessageContent(message)}
                     </div>
                   </div>
                 ))}
@@ -146,7 +367,7 @@ export default function MapApp() {
                   name="message"
                   value={input}
                   onChange={e => setInput(e.target.value)}
-                  placeholder="Ask me anything..."
+                  placeholder="Ask me about locations..."
                   disabled={status != "ready"}
                   className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
                 />
